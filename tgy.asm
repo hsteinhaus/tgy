@@ -116,6 +116,8 @@
 #include "tp70a.inc"		; TowerPro 70A with BL8003 FET drivers (INT0 PWM)
 #elif defined(tgy6a_esc)
 #include "tgy6a.inc"		; Turnigy Plush 6A (INT0 PWM)
+#elif defined(martinezV3_1_esc)
+#include "martinezV3_1.inc" ; Martinez 4in1 ESC V3.1
 #else
 #include "tgy.inc"		; TowerPro/Turnigy Basic/Plush "type 2" (INT0 PWM)
 #endif
@@ -124,6 +126,8 @@
 
 .equ	I2C_ADDR	= 0x50	; MK-style I2C address
 .equ	MOTOR_ID	= 1	; MK-style I2C motor ID, or UART motor number
+
+.equ	DEAD_TIME_NS	= 600	; Dead time with complementary PWM (62.5ns steps @ 16MHz: min 437ns, max 2437ns)
 
 .equ	COMP_PWM	= 0	; During PWM off, switch high side on (unsafe on some boards!)
 .equ	MOTOR_ADVANCE	= 18	; Degrees of timing advance (0 - 30, 30 meaning no delay)
@@ -398,8 +402,12 @@ eeprom_defaults_w:
 ;-- Macros ---------------------------------------------------------------
 .macro adiwx
 	.if @2 > 63
+		.if byte1(-@2)
 		subi	@0, byte1(-@2)
 		sbci	@1, byte1(-byte2(@2 + 0xff))
+		.else
+		subi	@1, byte1(-byte2(@2 + 0xff))
+		.endif
 	.else
 		adiw	@0, @2
 	.endif
@@ -407,10 +415,39 @@ eeprom_defaults_w:
 
 .macro sbiwx
 	.if @2 > 63
+		.if byte1(@2)
 		subi	@0, byte1(@2)
 		sbci	@1, byte2(@2)
+		.else
+		subi	@1, byte2(@2)
+		.endif
 	.else
 		sbiw	@0, @2
+	.endif
+.endmacro
+
+.macro cycle_delay
+	.if @0 >= 32
+		.error "cycle_delay too long"
+	.endif
+	.if @0 & 1
+		nop
+	.endif
+	.if @0 & 2
+		rjmp	PC + 1
+	.endif
+	.if @0 & 4
+		rjmp	PC + 1
+		rjmp	PC + 1
+	.endif
+	.if	@0 & 8
+		nop
+		rcall	wait_ret		; 3 cycles to call + 4 to return
+	.endif
+	.if	@0 & 16
+		rjmp	PC + 1
+		rcall	wait_ret
+		rcall	wait_ret
 	.endif
 .endmacro
 
@@ -630,6 +667,12 @@ pwm_on:
 		BpFET_off
 		sbrc	flags2, C_FET
 		CpFET_off
+		.if DEAD_TIME_NS * CPU_MHZ / 1000 > 7
+		.equ	EXTRA_DEAD_TIME = DEAD_TIME_NS * CPU_MHZ / 1000 - 7
+		.else
+		.equ	EXTRA_DEAD_TIME = 0
+		.endif
+		cycle_delay EXTRA_DEAD_TIME
 		.endif
 		sbrc	flags2, A_FET
 		AnFET_on
@@ -663,6 +706,7 @@ pwm_off:
 		sbrc	flags2, C_FET
 		CnFET_off
 		.if COMP_PWM
+		cycle_delay EXTRA_DEAD_TIME
 		sbrc	flags2, A_FET
 		ApFET_on
 		sbrc	flags2, B_FET
@@ -858,12 +902,14 @@ urxc_exit:	out	SREG, i_sreg
 ; beeper: timer0 is set to 1µs/count
 beep_f1:	ldi	temp4, 200
 		ldi	temp2, 80
+        RED_on
 		BpFET_on
 		AnFET_on
 		rjmp	beep
 
 beep_f2:	ldi	temp4, 180
 		ldi	temp2, 100
+        GRN_on
 		CpFET_on
 		BnFET_on
 		rjmp	beep
@@ -876,6 +922,8 @@ beep_f3:	ldi	temp4, 160
 
 beep_f4:	ldi	temp4, 140
 		ldi	temp2, 140
+		RED_on
+		GRN_on
 		CpFET_on
 		AnFET_on
 		; Fall through
@@ -904,6 +952,8 @@ beep3:		in	temp1, TCNT0
 		brne	beep2
 		dec	temp2
 		brne	beep_on
+		GRN_off
+		RED_off
 		ret
 
 wait240ms:	rcall	wait120ms
@@ -923,6 +973,8 @@ wait3:		in	temp1, TIFR
 		dec	temp2
 		brne	wait1
 		ret
+wait_ret:
+			ret
 ;-----bko-----------------------------------------------------------------
 ; Read from or write to the EEPROM block. To avoid duplication, we use the
 ; global interrupts flag (I) to enable writing versus reading mde. Only
@@ -1715,6 +1767,8 @@ i_rc_puls3:
 init_startup:
 		rcall	switch_power_off	; Disables PWM timer, turns off all FETs
 		cbr	flags0, (1<<SET_DUTY)	; Do not yet set duty on input
+		GRN_on
+		RED_off
 		.if MOTOR_BRAKE
 		ldi	YL, low(BRAKE_POWER)
 		ldi	YH, high(BRAKE_POWER)
@@ -1760,6 +1814,7 @@ start_from_running:
 		rcall	switch_power_off
 		comp_init temp1			; init comparator
 		RED_off
+		GRN_off
 
 		ldi	YL, low(PWR_MIN_START)	; Start with limited power to
 		ldi	YH, high(PWR_MIN_START) ; reduce the chance that we
@@ -1840,6 +1895,7 @@ run6:
 		rjmp	run6_3
 
 run6_2:		cbr	flags1, (1<<STARTUP)
+		RED_off
 		; Build up sys_control to MAX_POWER in steps.
 		; If SLOW_THROTTLE is disabled, this only limits
 		; initial start ramp-up; once running, sys_control
@@ -1940,6 +1996,7 @@ wait_pwm_enable:
 		cpi	ZL, low(pwm_wdr)
 		brne	wait_pwm_running
 		ldi	ZL, low(pwm_off)	; Re-enable PWM if disabled for powerskip or sync loss avoidance
+        RED_off
 wait_pwm_running:
 		sbrs	flags1, STARTUP
 		rjmp	wait_for_blank
