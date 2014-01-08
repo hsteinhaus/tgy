@@ -1,6 +1,6 @@
 ;***************************************************************
 ;* For Martinez 4fach ESC  V3             	                   *
-;* bearbeitet von imcoref                                      *
+;* edited by imcoref                                      *
 ;* https://github.com/sim-/tgy                                 *
 ;***************************************************************
 
@@ -8,7 +8,7 @@
 
 .equ	F_CPU			= 16000000
 .equ	USE_INT0		= 1
-.equ	USE_I2C			= 0	
+.equ	USE_I2C			= 0
 .equ	USE_UART		= 0
 .equ	USE_ICP			= 0
 
@@ -28,7 +28,7 @@
 ;.equ					= 1
 ;.equ					= 0
 .equ	INIT_PD			= 0
-.equ	DIR_PD			= (1<<statusLed)+(1<<warnLed) 
+.equ	DIR_PD			= (1<<statusLed)+(1<<warnLed)
 
 
 .MACRO rcp_int_enable
@@ -70,14 +70,14 @@ cbi PORTD, statusLed
 ; PORT C definitions *
 
 ;*********************
-;.equ					= 7	
-;.equ					= 6	
+;.equ					= 7
+;.equ					= 6
 ;.equ					= 5
 ;.equ					= 4
-.equ	mux_a			= 3 ; ADC für MUX a
-.equ	mux_b			= 2 ; ADC für MUX b	 
-.equ	mux_c			= 1 ; ADC für MUX c	 
-;.equ					= 0	
+.equ	mux_a			= 3 ; ADC für MUX 
+.equ	mux_b			= 2 ; ADC für MUX 
+.equ	mux_c			= 1 ; ADC für MUX 
+;.equ					= 0
 
 .equ	INIT_PC			= 0
 .equ	DIR_PC			= 0 ; auf PortC ist alles auf IN
@@ -119,7 +119,7 @@ cbi PORTD, statusLed
 .equ	CnFET			= 5	; SCK
 .equ	CpFET			= 4	; MISO
 .equ	BnFET			= 3	; MOSI
-.equ	BpFET			= 2	; 
+.equ	BpFET			= 2	;
 .equ	AnFET			= 1	;
 .equ	ApFET			= 0
 .equ	INIT_PB			= 0
