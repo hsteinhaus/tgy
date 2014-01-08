@@ -141,7 +141,7 @@
 
 .equ	DEAD_TIME_NS	= 600	; Dead time with complementary PWM (62.5ns steps @ 16MHz: min 437ns, max 2437ns)
 
-.equ	COMP_PWM	= 0	; During PWM off, switch high side on (unsafe on some boards!)
+.equ	COMP_PWM	= 1	; During PWM off, switch high side on (unsafe on some boards!)
 .if !defined(MOTOR_ADVANCE)
 .equ	MOTOR_ADVANCE	= 18	; Degrees of timing advance (0 - 30, 30 meaning no delay)
 .endif
