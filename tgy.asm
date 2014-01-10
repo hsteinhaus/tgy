@@ -134,6 +134,8 @@
 #include "tgy6a.inc"		; Turnigy Plush 6A (INT0 PWM)
 #elif defined(tgy_esc)
 #include "tgy.inc"		; TowerPro/Turnigy Basic/Plush "type 2" (INT0 PWM)
+#elif defined(martinezV3_esc)
+#include "martinezV3.inc"	; Martinez V3 4in1 ESC
 #else
 #error "Unrecognized board type."
 #endif
@@ -144,10 +146,10 @@
 .equ	BOOT_JUMP	= 1	; Jump to any boot loader when PWM input stays high
 .equ	BOOT_START	= THIRDBOOTSTART
 
-.equ	COMP_PWM	= 0	; During PWM off, switch high side on (unsafe on some boards!)
+.equ	COMP_PWM	= 1	; During PWM off, switch high side on (unsafe on some boards!)
 .if !defined(DEAD_LOW_NS)
-.equ	DEAD_LOW_NS	= 300	; Low-side dead time w/COMP_PWM (62.5ns steps @ 16MHz, max 2437ns)
-.equ	DEAD_HIGH_NS	= 300	; High-side dead time w/COMP_PWM (62.5ns steps @ 16MHz, max roughly PWM period)
+.equ	DEAD_LOW_NS	= 600	; Low-side dead time w/COMP_PWM (62.5ns steps @ 16MHz, max 2437ns)
+.equ	DEAD_HIGH_NS	= 1000	; High-side dead time w/COMP_PWM (62.5ns steps @ 16MHz, max roughly PWM period)
 .endif
 .equ	DEAD_TIME_LOW	= DEAD_LOW_NS * CPU_MHZ / 1000
 .equ	DEAD_TIME_HIGH	= DEAD_HIGH_NS * CPU_MHZ / 1000
@@ -227,6 +229,7 @@
 .equ	TIMING_MIN	= 0x8000 ; 8192us per commutation
 .equ	TIMING_RANGE1	= 0x4000 ; 4096us per commutation
 .equ	TIMING_RANGE2	= 0x2000 ; 2048us per commutation
+.equ	TIMING_DC_BIAS	= 0x0800 ; 800us per commutation
 .equ	TIMING_MAX	= 0x00e0 ; 56us per commutation
 
 .equ	TIMEOUT_START	= 48000	; Timeout per commutation for ZC during starting
@@ -238,6 +241,8 @@
 
 .equ	ENOUGH_GOODIES	= 12	; This many start cycles without timeout will transition to running mode
 .equ	ZC_CHECK_FAST	= 12	; Number of ZC check loops under which PWM noise should not matter
+.equ	ZC_CHECK_MAX	= POWER_RANGE / 32 ; Limit ZC checking to about 1/2 PWM frequency
+.equ	ZC_CHECK_MIN	= 3
 
 .equ	T0CLK		= (1<<CS01)	; clk/8 == 2MHz
 .equ	T1CLK		= (1<<CS10)+(USE_ICP<<ICES1)+(USE_ICP<<ICNC1)	; clk/1 == 16MHz
@@ -2178,7 +2183,9 @@ update_timing4:	movw	timing_duty_l, XL
 		ror	temp2
 		ror	temp1
 
-.if defined(DC_BIAS_CANCEL)
+		cpi2	temp2, temp3, (TIMING_DC_BIAS * CPU_MHZ / 4) >> 8, temp4
+		brcs	update_timing5
+;.if defined(DC_BIAS_CANCEL)
 		lds	temp5, last_tcnt1_l	; restore original c as a'
 		lds	temp6, last_tcnt1_h
 		lds	temp4, last_tcnt1_x
@@ -2195,11 +2202,15 @@ update_timing4:	movw	timing_duty_l, XL
 		add	YL, temp5		; b+= a' -> YL:YH:temp7 become filtered ZC time
 		adc	YH, temp6
 		adc	temp7, temp4
-.else
+;.else
+		rjmp	update_timing6
+
+update_timing5:
 		lds	YL, last_tcnt1_l	; restore original c as a'
 		lds	YH, last_tcnt1_h
 		lds	temp7, last_tcnt1_x
-.endif
+;.endif
+update_timing6:
 
 		ldi	temp4, (30 - MOTOR_ADVANCE) * 256 / 60
 		rcall	update_timing_add_degrees
@@ -2934,7 +2945,20 @@ wait_timeout:
 		sbrc	flags1, STARTUP
 		rjmp	wait_timeout_start
 		cpi	XH, ZC_CHECK_FAST
-		brcc	wait_for_edge_limited
+		brcs	wait_timeout_run
+		ldi	XH, ZC_CHECK_FAST - 1	; Limit back-tracking
+		cp	XL, XH
+		brcc	wait_timeout1
+		mov	XL, XH			; Clip current distance from crossing
+wait_timeout1:	rcall	load_timing
+		add	YL, temp1
+		adc	YH, temp2
+		adc	temp7, temp3
+		add	YL, temp1
+		adc	YH, temp2
+		adc	temp7, temp3
+		rcall	set_ocr1a_abs		; Set zero-crossing timeout to 120 degrees
+		rjmp	wait_for_edge2
 wait_timeout_run:
 		RED_on				; Turn on red LED
 wait_timeout_start:
@@ -2997,7 +3021,7 @@ wait_for_edge:
 		ldi	YH, byte2(0xff * 0x100)	; what would be 0xff at 60 degrees
 		mov	temp7, ZH
 		rcall	set_ocr1a_rel
-		ldi	XL, 4
+		ldi	XL, ZC_CHECK_MIN	; There shouldn't be much noise with no power
 		rjmp	wait_for_edge1
 wait_pwm_enable:
 		cpi	ZL, low(pwm_wdr)
@@ -3012,7 +3036,7 @@ wait_for_blank:
 		rcall	set_timing_degrees
 		rcall	wait_OCT1_tot		; Wait for the minimum blanking period
 
-		ldi	temp4, 24 * 256 / 120
+		ldi	temp4, 42 * 256 / 120
 		rcall	set_timing_degrees	; Set timeout for maximum blanking period
 wait_for_demag:
 		sbrs	flags0, OCT1_PENDING
@@ -3029,29 +3053,59 @@ wait_for_demag:
 		rjmp	wait_for_demag
 
 		rcall	load_timing
-		mov	XL, temp2		; Copy high and check extended byte
-		cpse	temp3, ZH		; to calculate the ZC check count
-		ldi	XL, 0xff
-.if TIMING_MAX * CPU_MHZ / 0x100 < 3
-.error "TIMING_MAX is too fast for at least 3 zero-cross checks -- increase it or adjust this"
+		mov	XL, temp2		; Copy high and extended byte
+		mov	XH, temp3		; to calculate the ZC check count
+		lsr	XH			; Quarter to obtain timing / 1024
+		ror	XL
+		lsr	XH
+		ror	XL
+		cpi	XL, ZC_CHECK_MIN
+		cpc	XH, ZH
+		brcs	wait_for_edge_fast_min
+		breq	wait_for_edge_fast
+.if ZC_CHECK_MAX < 256
+		cpi	XL, ZC_CHECK_MAX
+.else
+		cpi	XL, 255
 .endif
-		cpi	XL, ZC_CHECK_FAST	; With slower (longer) timing, wait for ZC
-		brcc	wait_for_edge1		; first while 30 degree timer still active
-wait_for_edge_limited:
-		rcall	load_timing
+		cpc	XH, ZH
+		brcs	wait_for_edge_below_max
+		ldi	XL, ZC_CHECK_MAX	; Limit to ZC_CHECK_MAX
+wait_for_edge_below_max:
+		cpi	XL, ZC_CHECK_FAST	; For faster timing, set normal ZC timeout
+		brcs	wait_for_edge_fast
+		ldi	temp4, 24 * 256 / 120	; With slower (longer) timing, set timer
+		rcall	set_timing_degrees	; for limited backtracing
+		rjmp	wait_for_edge1
+wait_for_edge_fast_min:
+		ldi	XL, ZC_CHECK_MIN
+wait_for_edge_fast:
+		add	YL, temp1
+		adc	YH, temp2
+		adc	temp7, temp3
 		add	YL, temp1
 		adc	YH, temp2
 		adc	temp7, temp3
 		rcall	set_ocr1a_abs		; Set zero-crossing timeout to 120 degrees
-		ldi	XH, ZC_CHECK_FAST - 1	; Limit back-tracking
-		rjmp	wait_for_edge2		; Continue waiting with limited backtracking
 
-wait_for_edge1: mov	XH, XL
+wait_for_edge1:	mov	XH, XL
 wait_for_edge2:	sbrs	flags0, OCT1_PENDING
 		rjmp	wait_timeout
 		sbrc	flags1, EVAL_RC
 		rcall	evaluate_rc
 		in	temp3, ACSR
+;		out	ACSR, temp3
+;		sbrc	temp3, ACI
+;		rjmp	wait_for_edge2		; Loop again if edge occurred since last check
+
+;		sbrc	temp3, ACO
+;		flag_on
+;		nop
+;		flag_off
+;		sbrs	temp3, ACO
+;		flag_on
+;		nop
+
 		eor	temp3, flags1
 		.if defined(HIGH_SIDE_PWM)
 		sbrs	temp3, ACO
@@ -3066,11 +3120,11 @@ wait_for_edge3:	dec	XL			; Zero-cross has happened
 		brne	wait_for_edge2		; Check again unless temp1 is zero
 
 wait_commutation:
-		flag_on
+;		flag_on
 		rcall	update_timing
 		sbrs	flags1, STARTUP
 		rcall	wait_OCT1_tot
-		flag_off
+;		flag_off
 		lds	temp1, powerskip
 		cpse	temp1, ZH
 		cbr	flags1, (1<<POWER_ON)	; Disable power when powerskipping
