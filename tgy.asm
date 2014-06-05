@@ -144,6 +144,8 @@
 #include "tgy6a.inc"		; Turnigy Plush 6A (INT0 PWM)
 #elif defined(tgy_esc)
 #include "tgy.inc"		; TowerPro/Turnigy Basic/Plush "type 2" (INT0 PWM)
+#elif defined(martinezV3_esc)
+#include "martinezV3.inc"	; Martinez V3 4in1 ESC
 #else
 #error "Unrecognized board type."
 #endif
